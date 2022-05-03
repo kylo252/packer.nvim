@@ -147,12 +147,14 @@ end
 ---Rollbacks `plugins` to the hash specified in `snapshot_path` if exists.
 ---It automatically runs `git fetch --depth 999999 --progress` to retrieve the history
 ---@param snapshot_path string @ realpath to the snapshot file
----@param plugins list @ of `plugin_utils.git_plugin_type` type of plugins
+---@param plugin table @ of `plugin_utils.git_plugin_type` type of plugins
 ---@return {ok: {completed: table<string, string>, failed: table<string, string[]>}}
-snapshot.rollback = function(snapshot_path, plugins)
+snapshot.rollback = function(snapshot_path, plugin, results)
+  results = results or {}
+  results.completed = results.completed or {}
+  results.completed = results.failed or {}
   assert(type(snapshot_path) == 'string', 'snapshot_path: expected string but got ' .. type(snapshot_path))
-  assert(type(plugins) == 'table', 'plugins: expected table but got ' .. type(snapshot_path))
-  log.debug('Rolling back to ' .. snapshot_path)
+  log.info('Rolling back to ' .. snapshot_path)
   local content = vim.fn.readfile(snapshot_path)
   ---@type string
   local plugins_snapshot = vim.fn.json_decode(content)
@@ -160,32 +162,40 @@ snapshot.rollback = function(snapshot_path, plugins)
     return result.err(fmt("Couldn't load '%s' file", snapshot_path))
   end
 
-  local completed = {}
-  local failed = {}
-
   return async(function()
-    for _, plugin in pairs(plugins) do
-      local function err_handler(err)
-        failed[plugin.short_name] = failed[plugin.short_name] or {}
-        failed[plugin.short_name][#failed[plugin.short_name] + 1] = err
-      end
+    local function err_handler(err)
+      results.failed[plugin.short_name] = results.failed[plugin.short_name] or {}
+      results.failed[plugin.short_name][#results.failed[plugin.short_name] + 1] = err
+    end
 
-      if plugins_snapshot[plugin.short_name] then
-        local commit = plugins_snapshot[plugin.short_name].commit
-        if commit ~= nil then
-          await(fetch(plugin))
-            :map_err(err_handler)
-            :and_then(await, plugin.revert_to(commit))
-            :map_ok(function(ok)
-              completed[plugin.short_name] = ok
-            end)
-            :map_err(err_handler)
-        end
+    if plugins_snapshot[plugin.short_name] then
+      local commit = plugins_snapshot[plugin.short_name].commit
+      if commit ~= nil then
+        await(fetch(plugin))
+          :map_err(err_handler)
+          :and_then(await, plugin.revert_to(commit))
+          :map_ok(function(ok)
+            results.completed[plugin.short_name] = ok
+          end)
+          :map_err(err_handler)
       end
     end
 
-    return result.ok { completed = completed, failed = failed }
+    -- return result.ok { completed = results.completed[plugin.short_name], failed = results.failed[plugin.short_name] }
+
   end)
+end
+
+snapshot.do_rollback = function(snapshot_path, plugins, results)
+  local tasks = {}
+  if #plugins > 0 then
+    for _, plugin in pairs(plugins) do
+      if plugin.short_name ~= 'packer.nvim' then
+        table.insert(tasks, snapshot.rollback(snapshot_path, plugin, results))
+      end
+    end
+  end
+  return tasks
 end
 
 ---Deletes the snapshot provided

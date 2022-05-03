@@ -65,7 +65,7 @@ local config_defaults = {
     keybindings = { quit = 'q', toggle_info = '<CR>', diff = 'd', prompt_revert = 'r', retry = 'R' },
   },
   luarocks = { python_cmd = 'python' },
-  log = { level = 'warn' },
+  log = { level = 'info' },
   profile = { enable = false },
   autoremove = false,
 }
@@ -916,20 +916,24 @@ packer.rollback = function(snapshot_name, ...)
       end, plugins)
     end
 
-    await(snapshot.rollback(snapshot_path, target_plugins))
-      :map_ok(function(ok)
-        await(a.main)
-        vim.notify('Rollback to "' .. snapshot_path .. '" completed', vim.log.levels.INFO, { title = 'packer.nvim' })
-        if next(ok.failed) then
-          vim.notify("Couldn't rollback " .. vim.inspect(ok.failed), vim.log.levels.INFO, { title = 'packer.nvim' })
-        end
-      end)
-      :map_err(function(err)
-        await(a.main)
-        vim.notify(err, vim.log.levels.ERROR, { title = 'packer.nvim' })
-      end)
+    local results = {}
+    local tasks = snapshot.do_rollback(snapshot_path, target_plugins, results)
+    if next(tasks) then
+      log.debug 'Running tasks'
+      table.insert(tasks, 1, config.max_jobs and config.max_jobs or (#tasks - 1))
+      a.interruptible_wait_pool(unpack(tasks))
+      await(a.main)
+      packer.on_complete()
+    else
+      log.info 'Rollback list empty, nothing to do'
+      packer.on_complete()
+    end
 
-    packer.on_complete()
+    if results.failed and #results.failed > 1 then
+      vim.notify("Couldn't rollback " .. vim.inspect(results.failed), vim.log.levels.INFO, { title = 'packer.nvim' })
+    else
+      vim.notify('Rollback to "' .. snapshot_path .. '" completed', vim.log.levels.INFO, { title = 'packer.nvim' })
+    end
   end)()
 end
 
